@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# PyInstaller / Build outputs
+build/
+dist/
+*.spec.bak
+*.zip
+*.exe
+*.syso
+
+# Temporary / Runtime files
+current_earth.png
+*.log
+
+# Backup directory
+backup/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing / Cache
+.pytest_cache/
+.coverage

@@ -1,0 +1,1 @@
+pyinstaller -w -D --noupx --icon=icon.ico --name="EarthWallpaper" desktop_v0.2.py

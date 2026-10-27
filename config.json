@@ -1,0 +1,14 @@
+{
+    "mode": "url",
+    "api_key": "",
+    "url": "http://jikji.duckdns.org:8085/cloud/clouds.jpg",
+    "lat": 30,
+    "lon": 127,
+    "tilt": 6.0,
+    "zoom": 60,
+    "opa": 100,
+    "cont": 130,
+    "int": 0,
+    "auto": true,
+    "layout_idx": 1
+}
