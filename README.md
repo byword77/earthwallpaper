@@ -35,7 +35,7 @@ venv\Scripts\activate
 
 3. 필요 패키지 설치:
 ```bash
-pip install PyQt6 Pillow requests numpy ephem
+pip install -r requirements.txt
 ```
 
 4. 애플리케이션 실행:
