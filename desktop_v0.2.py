@@ -5,6 +5,7 @@ import datetime
 import json
 import requests
 import winreg
+import time
 import math
 import random
 import numpy as np
@@ -25,7 +26,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QGroupBox, QRadioButton, QLineEdit, QButtonGroup,
                              QSystemTrayIcon, QMenu, QStyle, QAbstractSpinBox)
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QLockFile, QDir
-from PyQt6.QtGui import QPixmap, QResizeEvent, QPainter, QIcon
+from PyQt6.QtGui import QPixmap, QResizeEvent, QPainter, QIcon, QImage
+
+__version__ = "0.2.0"
 
 SPI_SETDESKWALLPAPER = 20
 SPIF_UPDATEINIFILE = 0x01
@@ -70,6 +73,9 @@ class ResizeLabel(QLabel):
 # 천체 위치 계산기
 # ==========================================
 class CelestialCalculator:
+    _last_iss_check = 0.0
+    _cached_iss_pos = (None, None)
+
     @staticmethod
     def get_sun_pos():
         if not HAS_EPHEM:
@@ -87,18 +93,24 @@ class CelestialCalculator:
         geo_lon = (geo_lon + np.pi) % (2 * np.pi) - np.pi
         return float(geo_lat), float(geo_lon)
 
-    @staticmethod
-    def get_iss_pos():
+    @classmethod
+    def get_iss_pos(cls):
+        now = time.time()
+        # 60초 이내에는 캐시된 좌표를 즉시 반환하여 네트워크 지연으로 인한 UI 프리징 방지
+        if now - cls._last_iss_check < 60.0 and cls._cached_iss_pos != (None, None):
+            return cls._cached_iss_pos
         try:
-            response = requests.get("http://api.open-notify.org/iss-now.json", timeout=1.0)
+            response = requests.get("http://api.open-notify.org/iss-now.json", timeout=0.8)
             if response.status_code == 200:
                 data = response.json()
                 lat = float(data['iss_position']['latitude'])
                 lon = float(data['iss_position']['longitude'])
-                return math.radians(lat), math.radians(lon)
-        except:
+                cls._cached_iss_pos = (math.radians(lat), math.radians(lon))
+                cls._last_iss_check = now
+                return cls._cached_iss_pos
+        except Exception:
             pass
-        return None, None
+        return cls._cached_iss_pos
 
 # ==========================================
 # 3D 지구 렌더러 (메모리 최적화 버전)
@@ -368,7 +380,7 @@ class EarthWallpaperApp(QMainWindow):
             self.setWindowIcon(self.app_icon)
         
         self.load_config()
-        self.setWindowTitle("Earth Wallpaper Manager")
+        self.setWindowTitle(f"Earth Wallpaper Manager v{__version__}")
         self.setGeometry(100, 100, 1100, 650)
         self.debounce_timer = QTimer(); self.debounce_timer.setSingleShot(True)
         self.debounce_timer.timeout.connect(self.update_preview)
@@ -484,7 +496,14 @@ class EarthWallpaperApp(QMainWindow):
         opt_layout.addWidget(self.btn_apply)
         self.btn_reset = QPushButton("설정 초기화"); self.btn_reset.setFlat(True); self.btn_reset.setStyleSheet("color: #888; font-size: 11px;")
         self.btn_reset.clicked.connect(self.reset_defaults)
-        opt_layout.addWidget(self.btn_reset, alignment=Qt.AlignmentFlag.AlignRight)
+        
+        bottom_bar = QHBoxLayout()
+        self.lbl_version = QLabel(f"v{__version__}")
+        self.lbl_version.setStyleSheet("color: #aaa; font-size: 10px;")
+        bottom_bar.addWidget(self.lbl_version)
+        bottom_bar.addStretch()
+        bottom_bar.addWidget(self.btn_reset)
+        opt_layout.addLayout(bottom_bar)
         opt_layout.addStretch()
         main_layout.addWidget(opts, stretch=0)
 
@@ -496,7 +515,9 @@ class EarthWallpaperApp(QMainWindow):
             self.tray.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
             
         menu = QMenu(); menu.addAction("열기", self.show_window); menu.addAction("종료", self.quit_app)
-        self.tray.setContextMenu(menu); self.tray.activated.connect(lambda r: self.show_window() if r == QSystemTrayIcon.ActivationReason.DoubleClick else None); self.tray.show()
+        self.tray.setContextMenu(menu); self.tray.activated.connect(lambda r: self.show_window() if r == QSystemTrayIcon.ActivationReason.DoubleClick else None)
+        self.tray.setToolTip(f"Earth Wallpaper Manager v{__version__}")
+        self.tray.show()
 
     def create_slider_spin(self, min_v, max_v, def_v, layout, txt):
         s = QSlider(Qt.Orientation.Horizontal); s.setRange(min_v, max_v); s.setValue(def_v)
@@ -517,10 +538,13 @@ class EarthWallpaperApp(QMainWindow):
         # [수정] 기본값에 layout_idx 추가
         self.cfg = {"mode": "url", "api_key": "", "url": "", "lat": 37, "lon": 127, 
                     "tilt": 23.5, "zoom": 80, "opa": 90, "cont": 160, 
-                    "int": 2, "auto": False, "layout_idx": 2} # default: 2 (Stretch)
+                    "int": 2, "auto": False, "layout_idx": 2}  # default: 2 (Stretch)
         if os.path.exists(self.config_file):
-            try: self.cfg.update(json.load(open(self.config_file, encoding='utf-8')))
-            except: pass
+            try:
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    self.cfg.update(json.load(f))
+            except Exception as e:
+                print(f"Config load error: {e}")
     
     def save_config(self):
         self.cfg.update({
@@ -535,9 +559,13 @@ class EarthWallpaperApp(QMainWindow):
             "cont": self.contrast_slider.value(), 
             "int": self.interval_combo.currentIndex(), 
             "auto": self.check_autorun.isChecked(),
-            "layout_idx": self.layout_combo.currentIndex() # [추가] 배치 옵션 저장
+            "layout_idx": self.layout_combo.currentIndex()  # [추가] 배치 옵션 저장
         })
-        json.dump(self.cfg, open(self.config_file, 'w', encoding='utf-8'), indent=4)
+        try:
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump(self.cfg, f, indent=4)
+        except Exception as e:
+            print(f"Config save error: {e}")
     
     def restore_ui_state(self):
         self.radio_api.setChecked(self.cfg["mode"]=="api"); self.radio_url.setChecked(self.cfg["mode"]=="url")
@@ -609,7 +637,7 @@ class EarthWallpaperApp(QMainWindow):
         ctypes.windll.user32.SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, self.output_file, SPIF_UPDATEINIFILE | SPIF_SENDWININICHANGE)
         self.update_preview()
     
-    # [신규] 배경화면 스타일 동적 설정 함수
+    # [신규] 배경화면 스타일 동적 설정 함수 (with문 적용으로 리소스 안전성 확보)
     def set_wallpaper_style(self):
         idx = self.layout_combo.currentIndex()
         
@@ -626,18 +654,35 @@ class EarthWallpaperApp(QMainWindow):
         
         wp_style, tile_wp = styles.get(idx, ("2", "0"))
         
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop", 0, winreg.KEY_SET_VALUE)
-        try: 
-            winreg.SetValueEx(key, "WallpaperStyle", 0, winreg.REG_SZ, wp_style)
-            winreg.SetValueEx(key, "TileWallpaper", 0, winreg.REG_SZ, tile_wp)
-        except: pass
-        winreg.CloseKey(key)
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop", 0, winreg.KEY_SET_VALUE) as key:
+                winreg.SetValueEx(key, "WallpaperStyle", 0, winreg.REG_SZ, wp_style)
+                winreg.SetValueEx(key, "TileWallpaper", 0, winreg.REG_SZ, tile_wp)
+        except Exception as e:
+            print(f"Registry wallpaper style error: {e}")
     
+    @staticmethod
+    def pil_to_pixmap(pil_img):
+        """PIL Image를 디스크 I/O 없이 메모리 상에서 바로 QPixmap으로 변환합니다."""
+        if pil_img.mode != "RGBA":
+            pil_img = pil_img.convert("RGBA")
+        data = pil_img.tobytes("raw", "RGBA")
+        qimg = QImage(data, pil_img.width, pil_img.height, QImage.Format.Format_RGBA8888)
+        return QPixmap.fromImage(qimg)
+
     def update_preview(self):
+        """디스크 파일(preview_earth.png)을 거치지 않고 메모리에서 즉시 프리뷰를 갱신합니다."""
         s = self.preview_label.size()
-        self.generate_image(self.preview_file, s.width(), s.height())
-        self.preview_label.clear_pixmap()
-        self.preview_label.setPixmap(QPixmap(self.preview_file))
+        img = EarthRenderer.render_globe(
+            width=s.width(), height=s.height(), 
+            lat=self.lat_slider.value(), lon=self.lon_slider.value(), 
+            zoom=self.zoom_slider.value(), tilt=self.tilt_spin.value(), 
+            earth_dir=self.earth_dir, assets_dir=self.assets_dir, 
+            cloud_path=self.cloud_file, opacity=self.opacity_slider.value(), 
+            contrast=self.contrast_slider.value() / 100.0
+        )
+        if img:
+            self.preview_label.setPixmap(self.pil_to_pixmap(img))
     
     def generate_image(self, path, w, h):
         img = EarthRenderer.render_globe(width=w, height=h, lat=self.lat_slider.value(), lon=self.lon_slider.value(), zoom=self.zoom_slider.value(), tilt=self.tilt_spin.value(), earth_dir=self.earth_dir, assets_dir=self.assets_dir, cloud_path=self.cloud_file, opacity=self.opacity_slider.value(), contrast=self.contrast_slider.value() / 100.0)
@@ -650,17 +695,23 @@ class EarthWallpaperApp(QMainWindow):
         m = [10, 30, 60][self.interval_combo.currentIndex()]; self.timer = QTimer(self); self.timer.timeout.connect(self.download_clouds); self.timer.start(m * 60 * 1000)
     
     def toggle_autorun(self):
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_ALL_ACCESS)
+        """시작 프로그램 등록 시 실행 환경(EXE 패키징 여부)에 맞춰 안전하게 등록합니다."""
         try:
-            if self.check_autorun.isChecked():
-                # [수정] sys.executable을 사용하여 실제 exe 경로를 레지스트리에 등록
-                exe_path = sys.executable
-                # 윈도우에서는 경로에 공백이 있을 수 있으므로 따옴표로 감싸는 것이 안전
-                winreg.SetValueEx(key, "EarthWallpaper", 0, winreg.REG_SZ, f'"{exe_path}"')
-            else:
-                winreg.DeleteValue(key, "EarthWallpaper")
-        except: pass
-        winreg.CloseKey(key)
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_ALL_ACCESS) as key:
+                if self.check_autorun.isChecked():
+                    if getattr(sys, 'frozen', False):
+                        cmd_str = f'"{sys.executable}"'
+                    else:
+                        script_path = os.path.abspath(__file__)
+                        cmd_str = f'"{sys.executable}" "{script_path}"'
+                    winreg.SetValueEx(key, "EarthWallpaper", 0, winreg.REG_SZ, cmd_str)
+                else:
+                    try:
+                        winreg.DeleteValue(key, "EarthWallpaper")
+                    except FileNotFoundError:
+                        pass
+        except Exception as e:
+            print(f"Registry autorun error: {e}")
     
     def closeEvent(self, e):
         if self.tray.isVisible(): self.hide(); self.save_config(); e.ignore()

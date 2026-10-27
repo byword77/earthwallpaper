@@ -21,6 +21,7 @@ dist/
 
 # Temporary / Runtime files
 current_earth.png
+preview_earth.png
 *.log
 
 # Backup directory
